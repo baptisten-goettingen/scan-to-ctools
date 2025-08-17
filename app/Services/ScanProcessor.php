@@ -145,7 +145,6 @@ class ScanProcessor
     private static function trySetOwnership(string $target, ?callable $logger = null): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
-            // Windows: Ownership-Änderung überspringen
             return;
         }
 
@@ -155,33 +154,19 @@ class ScanProcessor
         try {
             $changed = false;
 
-            // 1) Wenn posix verfügbar: nutze uid/gid direkt
-            if (function_exists('posix_getpwnam') && function_exists('posix_getpwuid')) {
+            // Versuche posix-API (UID/GID)
+            if (function_exists('posix_getpwnam')) {
                 $pw = @posix_getpwnam($desiredUser);
                 if ($pw && isset($pw['uid'])) {
                     $uid = $pw['uid'];
                     $gid = $pw['gid'] ?? null;
 
-                    // chown/chgrp mit uid/gid
-                    if (@chown($target, $uid)) {
-                        $changed = true;
-                    }
-                    if ($gid !== null && @chgrp($target, $gid)) {
-                        $changed = true;
-                    }
-                } else {
-                    // fallback: chown/chgrp mit Namen probieren
-                    if (@chown($target, $desiredUser)) {
-                        $changed = true;
-                    }
-                    if (@chgrp($target, $desiredGroup)) {
-                        $changed = true;
-                    }
+                    if (@chown($target, $uid)) { $changed = true; }
+                    if ($gid !== null && @chgrp($target, $gid)) { $changed = true; }
                 }
             }
 
-            // 2) Falls posix nicht verfügbar oder Änderung nicht erfolgreich:
-            //    Wenn wir als root laufen, können wir shell chown verwenden.
+            // Wenn noch nicht geändert und wir root sind: shell chown
             if (!$changed && function_exists('posix_geteuid') && posix_geteuid() === 0 && function_exists('escapeshellarg')) {
                 $cmd = 'chown ' . escapeshellarg($desiredUser . ':' . $desiredGroup) . ' ' . escapeshellarg($target) . ' 2>&1';
                 @exec($cmd, $out, $exit);
@@ -190,30 +175,27 @@ class ScanProcessor
                 }
             }
 
-            // 3) Falls noch nicht geändert: versuche wenigstens chown/chgrp mit Namen (silently)
+            // Letzter Versuch: chown/chgrp mit Namen (silent)
             if (!$changed) {
-                if (@chown($target, $desiredUser)) {
-                    $changed = true;
-                }
-                if (@chgrp($target, $desiredGroup)) {
-                    $changed = true;
-                }
+                if (@chown($target, $desiredUser)) { $changed = true; }
+                if (@chgrp($target, $desiredGroup)) { $changed = true; }
             }
 
-            // 4) Setze sichere Dateirechte
+            // Setze sichere Rechte (auch wenn Ownership nicht möglich)
             @chmod($target, 0640);
 
-            // 5) Verifizieren (wenn möglich)
-            $ownerOk = true;
-            if (function_exists('posix_getpwuid')) {
-                $ownerInfo = @posix_getpwuid(@fileowner($target));
-                $ownerOk = ($ownerInfo && (($ownerInfo['name'] ?? '') === $desiredUser));
-            }
+            // Detailliertes Status-Logging zur Fehlersuche
+            $euid = function_exists('posix_geteuid') ? posix_geteuid() : null;
+            $fileOwnerUid = @fileowner($target);
+            $ownerInfo = (function_exists('posix_getpwuid') && $fileOwnerUid !== false) ? @posix_getpwuid($fileOwnerUid) : null;
+            $currentOwner = $ownerInfo['name'] ?? (($fileOwnerUid === false) ? 'unknown' : (string)$fileOwnerUid);
+            $perms = @fileperms($target);
+            $permStr = $perms !== false ? substr(sprintf('%o', $perms), -4) : '????';
 
-            if ($ownerOk) {
-                if ($logger) { $logger('info', 'ownership set', ['file' => $target, 'user' => $desiredUser]); }
+            if ($changed) {
+                if ($logger) { $logger('info', 'ownership set', ['file' => $target, 'user' => $desiredUser, 'owner' => $currentOwner, 'euid' => $euid, 'perms' => $permStr]); }
             } else {
-                if ($logger) { $logger('warning', 'ownership not changed to www-data (insufficient permissions?)', ['file' => $target]); }
+                if ($logger) { $logger('warning', 'ownership not changed to www-data (insufficient permissions?)', ['file' => $target, 'owner' => $currentOwner, 'euid' => $euid, 'perms' => $permStr]); }
             }
         } catch (\Throwable $e) {
             if ($logger) { $logger('warning', 'chown failed', ['file' => $target, 'error' => $e->getMessage()]); }
