@@ -56,7 +56,6 @@ class ScanProcessor
                     $moved[] = basename($target);
                     if ($printer) { $printer("Verschoben: {$filename} -> {$target}"); }
                     if ($logger) { $logger('info', 'pdf moved', ['from' => $path, 'to' => $target]); }
-                    self::trySetOwnership($target, $logger);
                 } else {
                     $errors[] = "Move failed for {$filename}";
                     if ($logger) { $logger('error', 'move failed', ['file' => $path, 'target' => $target]); }
@@ -140,75 +139,5 @@ class ScanProcessor
             // swallow, caller records error
         }
         return false;
-    }
-
-    private static function trySetOwnership(string $target, ?callable $logger = null): void
-    {
-        if (PHP_OS_FAMILY === 'Windows') {
-            return;
-        }
-
-        $desiredUser = 'www-data';
-        $desiredGroup = 'www-data';
-
-        try {
-            // Ermittel aktuellen Owner (sofern möglich)
-            $fileOwnerUid = @fileowner($target);
-            $ownerInfo = (function_exists('posix_getpwuid') && $fileOwnerUid !== false) ? @posix_getpwuid($fileOwnerUid) : null;
-            $currentOwner = $ownerInfo['name'] ?? (($fileOwnerUid === false) ? 'unknown' : (string)$fileOwnerUid);
-
-            // Wenn Datei bereits dem gewünschten User gehört -> nichts tun
-            if (($currentOwner === $desiredUser) || ($fileOwnerUid !== false && function_exists('posix_getpwnam') && ($fileOwnerUid === (@posix_getpwnam($desiredUser)['uid'] ?? null)))) {
-                if ($logger) { $logger('info', 'ownership already correct', ['file' => $target, 'owner' => $currentOwner]); }
-                // trotzdem sichere Rechte setzen
-                @chmod($target, 0640);
-                return;
-            }
-
-            $changed = false;
-
-            // 1) Versuche posix-API (UID/GID) - benötigt i.d.R. Root zum Ändern des Owners
-            if (function_exists('posix_getpwnam')) {
-                $pw = @posix_getpwnam($desiredUser);
-                if ($pw && isset($pw['uid'])) {
-                    $uid = $pw['uid'];
-                    $gid = $pw['gid'] ?? null;
-
-                    if (@chown($target, $uid)) { $changed = true; }
-                    if ($gid !== null && @chgrp($target, $gid)) { $changed = true; }
-                }
-            }
-
-            // 2) Wenn noch nicht geändert und Prozess root ist: chown via Shell (zuverlässig)
-            if (!$changed && function_exists('posix_geteuid') && posix_geteuid() === 0 && function_exists('escapeshellarg')) {
-                $cmd = 'chown ' . escapeshellarg($desiredUser . ':' . $desiredGroup) . ' ' . escapeshellarg($target) . ' 2>&1';
-                @exec($cmd, $out, $exit);
-                if (isset($exit) && $exit === 0) { $changed = true; }
-            }
-
-            // 3) Fallback: versuche zumindest die Gruppe zu setzen (kann auch ohne Root möglich sein, wenn Prozess Gruppenzugehörigkeit hat)
-            if (!$changed) {
-                if (@chgrp($target, $desiredGroup)) { $changed = true; }
-            }
-
-            // 4) Setze sichere Dateirechte (auch wenn Ownership-Änderung nicht möglich)
-            @chmod($target, 0640);
-
-            // 5) Detailliertes Logging (EUID, aktueller Owner, perms)
-            $euid = function_exists('posix_geteuid') ? posix_geteuid() : null;
-            $fileOwnerUid = @fileowner($target);
-            $ownerInfo = (function_exists('posix_getpwuid') && $fileOwnerUid !== false) ? @posix_getpwuid($fileOwnerUid) : null;
-            $currentOwner = $ownerInfo['name'] ?? (($fileOwnerUid === false) ? 'unknown' : (string)$fileOwnerUid);
-            $perms = @fileperms($target);
-            $permStr = $perms !== false ? substr(sprintf('%o', $perms), -4) : '????';
-
-            if ($changed) {
-                if ($logger) { $logger('info', 'ownership set (or group changed)', ['file' => $target, 'user' => $desiredUser, 'owner' => $currentOwner, 'euid' => $euid, 'perms' => $permStr]); }
-            } else {
-                if ($logger) { $logger('warning', 'ownership not changed to www-data (insufficient permissions)', ['file' => $target, 'owner' => $currentOwner, 'euid' => $euid, 'perms' => $permStr]); }
-            }
-        } catch (\Throwable $e) {
-            if ($logger) { $logger('warning', 'chown/chgrp attempt failed', ['file' => $target, 'error' => $e->getMessage()]); }
-        }
     }
 }
