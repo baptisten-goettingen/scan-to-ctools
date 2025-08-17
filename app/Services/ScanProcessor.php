@@ -145,38 +145,75 @@ class ScanProcessor
     private static function trySetOwnership(string $target, ?callable $logger = null): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
+            // Windows: Ownership-Änderung überspringen
             return;
         }
 
+        $desiredUser = 'www-data';
+        $desiredGroup = 'www-data';
+
         try {
-            $desiredUser = 'www-data';
-            if (function_exists('posix_getpwnam')) {
-                $pw = posix_getpwnam($desiredUser);
+            $changed = false;
+
+            // 1) Wenn posix verfügbar: nutze uid/gid direkt
+            if (function_exists('posix_getpwnam') && function_exists('posix_getpwuid')) {
+                $pw = @posix_getpwnam($desiredUser);
                 if ($pw && isset($pw['uid'])) {
-                    @chown($target, $pw['uid']);
-                    if (isset($pw['gid'])) {
-                        @chgrp($target, $pw['gid']);
+                    $uid = $pw['uid'];
+                    $gid = $pw['gid'] ?? null;
+
+                    // chown/chgrp mit uid/gid
+                    if (@chown($target, $uid)) {
+                        $changed = true;
+                    }
+                    if ($gid !== null && @chgrp($target, $gid)) {
+                        $changed = true;
                     }
                 } else {
-                    @chown($target, $desiredUser);
-                    @chgrp($target, $desiredUser);
+                    // fallback: chown/chgrp mit Namen probieren
+                    if (@chown($target, $desiredUser)) {
+                        $changed = true;
+                    }
+                    if (@chgrp($target, $desiredGroup)) {
+                        $changed = true;
+                    }
                 }
-            } else {
-                @chown($target, $desiredUser);
-                @chgrp($target, $desiredUser);
             }
 
+            // 2) Falls posix nicht verfügbar oder Änderung nicht erfolgreich:
+            //    Wenn wir als root laufen, können wir shell chown verwenden.
+            if (!$changed && function_exists('posix_geteuid') && posix_geteuid() === 0 && function_exists('escapeshellarg')) {
+                $cmd = 'chown ' . escapeshellarg($desiredUser . ':' . $desiredGroup) . ' ' . escapeshellarg($target) . ' 2>&1';
+                @exec($cmd, $out, $exit);
+                if (isset($exit) && $exit === 0) {
+                    $changed = true;
+                }
+            }
+
+            // 3) Falls noch nicht geändert: versuche wenigstens chown/chgrp mit Namen (silently)
+            if (!$changed) {
+                if (@chown($target, $desiredUser)) {
+                    $changed = true;
+                }
+                if (@chgrp($target, $desiredGroup)) {
+                    $changed = true;
+                }
+            }
+
+            // 4) Setze sichere Dateirechte
+            @chmod($target, 0640);
+
+            // 5) Verifizieren (wenn möglich)
+            $ownerOk = true;
             if (function_exists('posix_getpwuid')) {
-                $ownerInfo = posix_getpwuid(@fileowner($target));
+                $ownerInfo = @posix_getpwuid(@fileowner($target));
                 $ownerOk = ($ownerInfo && (($ownerInfo['name'] ?? '') === $desiredUser));
-            } else {
-                $ownerOk = true; // can't verify
             }
 
             if ($ownerOk) {
                 if ($logger) { $logger('info', 'ownership set', ['file' => $target, 'user' => $desiredUser]); }
             } else {
-                if ($logger) { $logger('warning', 'ownership not changed to www-data', ['file' => $target]); }
+                if ($logger) { $logger('warning', 'ownership not changed to www-data (insufficient permissions?)', ['file' => $target]); }
             }
         } catch (\Throwable $e) {
             if ($logger) { $logger('warning', 'chown failed', ['file' => $target, 'error' => $e->getMessage()]); }
