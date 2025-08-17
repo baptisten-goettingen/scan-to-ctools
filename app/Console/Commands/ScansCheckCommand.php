@@ -35,17 +35,15 @@ class ScansCheckCommand extends Command
      */
    public function handle(): int
     {
-        $dir = rtrim(env('SCAN_IN', ''), '/');
+        $dir = rtrim(config('scan.in_dir'), '/');
+        $allowed = collect(config('scan.allowed_ext'))->map(fn($e) => strtolower($e));
+        $minStable = (int) config('scan.min_stable');
+
         if (!$dir || !is_dir($dir)) {
             $this->error("SCAN_IN-Verzeichnis fehlt/ungültig: {$dir}");
             Log::error("scans:check | SCAN_IN invalid: {$dir}");
             return self::FAILURE;
         }
-
-        $allowed = collect(explode(',', (string)env('ALLOWED_EXT', '')))
-            ->filter()->map(fn($e) => strtolower(trim($e)));
-
-        $minStable = (int) env('MIN_STABLE_SEC', 3);
 
         // State laden (bereits gesehene Dateien)
         $seen = $this->loadState();
