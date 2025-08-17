@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
+use App\Services\ScanProcessor;
 
 class ScansCheckCommand extends Command
 {
@@ -12,7 +13,7 @@ class ScansCheckCommand extends Command
      *
      * @var string
      */
-    protected $signature = 'app:scans-check';
+    protected $signature = 'app:scans-check {--scan-dir= : Optional override for scan directory}';
 
     /**
      * The console command description.
@@ -21,29 +22,46 @@ class ScansCheckCommand extends Command
      */
     protected $description = 'Prüft den SCAN_IN-Ordner auf neue, stabile Dateien und meldet sie im Log.';
 
-    
     public function handle(): int
     {
-        $dir = rtrim(config('scan.in_dir'), '/');
+        $override = $this->option('scan-dir');
+        $dir = $override ? rtrim($override, '/\\') : rtrim(config('scan.in_dir'), '/');
 
-        // Log in laravel.log
         Log::info('scans:check gestartet', ['dir' => $dir]);
-
-        // Nur Shell-Output (sichtbar beim manuellen Aufruf, NICHT in laravel.log):
         $this->info("Starte Prüfung im Ordner: {$dir}");
 
-        if (!$dir || !is_dir($dir)) {
-            Log::error('scans:check | SCAN_IN invalid', ['dir' => $dir]);
-            $this->error("SCAN_IN-Verzeichnis fehlt/ungültig: {$dir}");
-            return self::FAILURE;
+        $destDir = storage_path('app/private');
+
+        // delegiere an ScanProcessor
+        $result = ScanProcessor::processDirectory(
+            $dir,
+            $destDir,
+            function ($level, $message, $context = []) {
+                // einfache Brücke zu Laravel-Log
+                Log::{$level}('scans:check | ' . $message, $context);
+            },
+            function ($line) {
+                // gibt auf Konsole aus
+                echo $line . PHP_EOL;
+            }
+        );
+
+        foreach ($result['deleted'] as $d) {
+            $this->line("Gelöscht (kein PDF): {$d}");
+        }
+        foreach ($result['moved'] as $m) {
+            $this->line("Verschoben: {$m}");
+        }
+        foreach ($result['errors'] as $err) {
+            $this->error("Fehler: {$err}");
         }
 
-        // … weitere Prüfung, z. B. Dateien zählen
-        $files = glob($dir . '/*');
-        Log::info('scans:check | Dateien gefunden', ['count' => count($files)]);
+        if (count($result['errors']) > 0) {
+            Log::error('scans:check beendet mit Fehlern', ['errors' => $result['errors']]);
+            return self::FAILURE;
+        }
 
         Log::info('scans:check erfolgreich beendet');
         return self::SUCCESS;
     }
-
 }
