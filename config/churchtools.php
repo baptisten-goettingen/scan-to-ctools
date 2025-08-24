@@ -1,8 +1,9 @@
 <?php
 
 return [
-    'api_url'          => env('CHURCHTOOLS_API_URL', ''), // z.B. https://demo.church.tools
-    'api_token'        => env('CHURCHTOOLS_API_TOKEN', ''), // Bearer-Token / API-Key
-    'upload_endpoint'  => env('CHURCHTOOLS_UPLOAD_ENDPOINT', '/api/media'), // relativer Pfad ohne trailing slash
-    'timeout'          => (int) env('CHURCHTOOLS_TIMEOUT', 30),
+    'api_url' => env('CHURCHTOOLS_API_URL', ''),
+    'username' => env('CHURCHTOOLS_USERNAME', ''),
+    'password' => env('CHURCHTOOLS_PASSWORD', ''),
+    'wiki_domain_identifier' => env('CHURCHTOOLS_WIKI_DOMAIN_IDENTIFIER', ''),
+    'wiki_domain' => env('CHURCHTOOLS_WIKI_DOMAIN', ''),
 ];

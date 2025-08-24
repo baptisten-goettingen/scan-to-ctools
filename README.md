@@ -55,7 +55,7 @@ Relevante config‑Dateien:
 Alle Commands mit Artisan aufrufen.
 
 - app:scans-check
-  - Zweck: Prüft das konfigurierte Eingangsverzeichnis, löscht Nicht‑PDFs und verschiebt PDFs nach `storage/app/private`.
+  - Zweck: Prüft das konfigurierte Eingangsverzeichnis, löscht Nicht‑PDFs und verschiebt PDFs nach `storage/app/private`. Lädt PDFs optional per ChurchTools‑API hoch.
   - Usage:
     ```
     php artisan app:scans-check
@@ -89,13 +89,6 @@ sudo setfacl -R -d -m g:www-data:rwX,u:scanner:rwx /var/www/scan-to-ctools/stora
 ```
 
 Hinweis: Die Applikation versucht nicht mehr, Datei‑Ownership per PHP zu setzen — Berechtigungen/Gruppe sollten systemseitig passend konfiguriert werden.
-
-## Tests
-Unit‑Tests (reines PHPUnit) vorhanden für die Scan‑Verarbeitung:
-```
-vendor/bin/phpunit --filter ScansCheckCommandTest
-```
-Die Logik ist in `app/Services/ScanProcessor.php` kapselt und lässt sich ohne Laravel‑Bootstrapping testen.
 
 ## Troubleshooting / Logs
 - Logs: `storage/logs/laravel.log` — Suche nach `scans:check`.
