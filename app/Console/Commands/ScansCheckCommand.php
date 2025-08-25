@@ -2,14 +2,10 @@
 
 namespace App\Console\Commands;
 
-use CTApi\CTConfig;
-use CTApi\CTClient;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use App\Services\ScanProcessor;
-use CTApi\Models\Wiki\WikiCategory\WikiCategoryRequest;
-use CTApi\Models\Wiki\WikiPage\WikiPageTreeNode;
-use CTApi\Utils\CTUtil;
+use App\Services\ChurchToolsService;
 
 class ScansCheckCommand extends Command
 {
@@ -26,30 +22,31 @@ class ScansCheckCommand extends Command
      * @var string
      */
     protected $description = 'Prüft den SCAN_IN-Ordner auf neue Dateien, verschiebt PDFs und lädt sie ins ChurchTools-Wiki hoch.';
+    
+    private ChurchToolsService $churchToolsService;
 
     public function __construct()
     {
         parent::__construct();
+
+        $this->churchToolsService = new ChurchToolsService(
+            config('churchtools.api_url'),
+            config('churchtools.username'),
+            config('churchtools.password'),
+            config('churchtools.wiki_domain'),
+            config('churchtools.wiki_domain_identifier')
+        );
     }
 
     public function handle(): int
     {
-        // Konfiguriere den ChurchTools API Client
-        CTConfig::setApiUrl(config('churchtools.api_url'));
-        CTConfig::authWithCredentials(
-            config('churchtools.username'),
-            config('churchtools.password')
-        );
-
         $override = $this->option('scan-dir');
         $dir = $override ? rtrim($override, '/\\') : rtrim(config('scan.in_dir'), '/');
 
         Log::info('scans:check gestartet', ['dir' => $dir]);
-        $this->info("Starte Prüfung im Ordner: {$dir}");
 
         $destDir = storage_path('app/private');
 
-        // Verarbeite Dateien mit ScanProcessor
         $result = ScanProcessor::processDirectory(
             $dir,
             $destDir,
@@ -61,40 +58,28 @@ class ScansCheckCommand extends Command
             }
         );
 
-        // Zeige gelöschte Dateien
         foreach ($result['deleted'] as $d) {
-            $this->line("Gelöscht (kein PDF): {$d}");
+            $this->line("Deleted (no PDF file): {$d}");
         }
 
-        // Wenn PDFs verschoben wurden, versuche Upload ins Wiki
         if (!empty($result['moved'])) {
+            $csrfToken = $this->churchToolsService->getCsrfToken();
+            if (!$csrfToken) {
+                $this->error("CSRF-Token could not be retrieved. Aborting uploads.");
+                return self::FAILURE;
+            }
+
             foreach ($result['moved'] as $filename) {
                 $filepath = $destDir . DIRECTORY_SEPARATOR . $filename;
-                $this->info("Lade Datei ins Wiki hoch: {$filename}");
-               
+                $this->info("Upload file to wiki: {$filename}");
+
                 try {
-                    Log::info('scans:check | upload start', [
-                        'file' => $filename,
-                        'endpoint' => "/api/files/wiki/7",
-                        'filepath' => $filepath,
-                    ]);
-
-                    $csrfToken = json_decode(CTClient::getClient()->get("/api/csrftoken")->getBody()->getContents())->data;
-
-                    $apiUrl = sprintf(
-                        "%s/api/files/%s/%s",
-                        config('churchtools.api_url'),
-                        config('churchtools.wiki_domain'),
-                        config('churchtools.wiki_domain_identifier')
-                    );
-                    $resultString=$this->uploadPerCurl($apiUrl, $csrfToken, $filepath);
-
+                    $response = $this->churchToolsService->uploadFile($filepath, $csrfToken);
                     Log::info('scans:check | upload success', [
                         'file' => $filename,
-                        'response' => $resultString
-                    ]);                   
-                    $this->info("Hochgeladen: {$filename}");
-                 
+                        'response' => $response
+                    ]);
+                    $this->info("Uploaded: {$filename}");
                 } catch (\Exception $e) {
                     $this->error("Upload fehlgeschlagen für {$filename}: " . $e->getMessage());
                     Log::error('scans:check | upload failed', [
@@ -117,25 +102,5 @@ class ScansCheckCommand extends Command
         $this->info('Verarbeitung abgeschlossen.');
         Log::info('scans:check erfolgreich beendet');
         return self::SUCCESS;
-    }
-
-    private function uploadPerCurl(string $apiUrl, string $csrfToken, string $filepath): string
-    {
-          $ch = curl_init($apiUrl);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                "content-type:multipart/form-data",
-                "csrf-token:" . $csrfToken
-            ]);
-        // Set Cookie
-        $cookie = CTConfig::getSessionCookie();
-        if ($cookie != null) {
-            curl_setopt($ch, CURLOPT_COOKIE, $cookie["Name"] . '=' . $cookie["Value"]);
-        }
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, ["files[]" => curl_file_create($filepath)]);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        $resultString = (string)curl_exec($ch);
-        curl_close($ch);
-        return $resultString;
     }
 }
