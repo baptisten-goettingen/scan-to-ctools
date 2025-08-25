@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\File;
 use App\Services\ScanProcessor;
 use App\Services\ChurchToolsService;
 
@@ -21,7 +22,7 @@ class ScansCheckCommand extends Command
      *
      * @var string
      */
-    protected $description = 'Prüft den SCAN_IN-Ordner auf neue Dateien, verschiebt PDFs und lädt sie ins ChurchTools-Wiki hoch.';
+    protected $description = 'Checks the SCAN_IN folder for new files, moves PDFs, and uploads them to the ChurchTools Wiki.';
     
     private ChurchToolsService $churchToolsService;
 
@@ -44,6 +45,7 @@ class ScansCheckCommand extends Command
         $dir = $override ? rtrim($override, '/\\') : rtrim(config('scan.in_dir'), '/');
 
         Log::info('scans:check gestartet', ['dir' => $dir]);
+        $this->info("Starting scan in folder: {$dir}");
 
         $destDir = storage_path('app/private');
 
@@ -59,19 +61,19 @@ class ScansCheckCommand extends Command
         );
 
         foreach ($result['deleted'] as $d) {
-            $this->line("Deleted (no PDF file): {$d}");
+            $this->line("Deleted (not a PDF): {$d}");
         }
 
         if (!empty($result['moved'])) {
             $csrfToken = $this->churchToolsService->getCsrfToken();
             if (!$csrfToken) {
-                $this->error("CSRF-Token could not be retrieved. Aborting uploads.");
+                $this->error("Failed to retrieve CSRF token.");
                 return self::FAILURE;
             }
 
             foreach ($result['moved'] as $filename) {
                 $filepath = $destDir . DIRECTORY_SEPARATOR . $filename;
-                $this->info("Upload file to wiki: {$filename}");
+                $this->info("Uploading file to Wiki: {$filename}");
 
                 try {
                     $response = $this->churchToolsService->uploadFile($filepath, $csrfToken);
@@ -80,14 +82,21 @@ class ScansCheckCommand extends Command
                         'response' => $response
                     ]);
                     $this->info("Uploaded: {$filename}");
+
+                    // Delete file after successful upload
+                    if (File::exists($filepath)) {
+                        File::delete($filepath);
+                        $this->info("File deleted: {$filename}");
+                        Log::info('scans:check | file deleted', ['file' => $filename]);
+                    }
                 } catch (\Exception $e) {
-                    $this->error("Upload fehlgeschlagen für {$filename}: " . $e->getMessage());
+                    $this->error("Upload failed for {$filename}: " . $e->getMessage());
                     Log::error('scans:check | upload failed', [
                         'file' => $filename,
                         'error' => $e->getMessage(),
                         'trace' => $e->getTraceAsString(),
                     ]);
-                    $result['errors'][] = "Upload fehlgeschlagen: {$filename}";
+                    $result['errors'][] = "Upload failed: {$filename}";
                 }
             }
         }
@@ -99,8 +108,8 @@ class ScansCheckCommand extends Command
             return self::FAILURE;
         }
 
-        $this->info('Verarbeitung abgeschlossen.');
-        Log::info('scans:check erfolgreich beendet');
+        $this->info('Processing completed.');
+        Log::info('scans:check finished successfully');
         return self::SUCCESS;
     }
 }
